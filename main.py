@@ -1,130 +1,153 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.optimize import minimize
+from scipy.constants import c
 
-# --- 1. AYARLAR VE BAŞLANGIÇ DEĞERLERİ ---
-Fs = 1000.0       # Örnekleme Frekansı (Hz)
-N = 64            # FFT Boyutu (Düşük tutuldu ki "basamaklanma" belli olsun)
-SNR_dB = 10       # Sinyal Gürültü Oranı
-num_steps = 100   # Simülasyon adım sayısı
+# --- 1. Sistem ve Hedef Parametreleri ---
+fs, T_chirp, B, fc = 2e6, 0.25e-3, 150e6, 24e9
+L, N = 64, int(fs * T_chirp)
+slope, dt = B / T_chirp, L * T_chirp
+snr_db = 20 
 
-# Gerçek Hedef (Ground Truth): 
-# Frekans 10.2'den başlayıp 15.8'e doğru lineer artıyor (Sabit hızla uzaklaşan hedef)
-true_freqs = np.linspace(10.2, 15.8, num_steps) * (Fs/N) 
-# Not: Burada "frekans" doğrudan hedef mesafesini temsil eder (FMCW prensibi).
+target_defs = [
+    {"r0": 25.0, "v": 4.5,  "color": 'blue',   "name": "Hedef 1"},
+    {"r0": 50.0, "v": -2.0, "color": 'green',  "name": "Hedef 2"},
+    {"r0": 75.0, "v": 8.5,  "color": 'red',    "name": "Hedef 3"}
+]
 
-# Sonuçları saklayacağımız listeler
-fft_estimates = []
-kalman_estimates = []
+# --- 2. Yardımcı Fonksiyonlar ve Kalman Sınıfı ---
+def get_crlb_std(snr_db, B, fc, L, T_chirp):
+    snr_lin = 10**(snr_db / 10)
+    std_r = c / (2 * np.pi * B * np.sqrt(2 * snr_lin))
+    std_v = c / (2 * np.pi * fc * (L * T_chirp) * np.sqrt(2 * snr_lin))
+    return std_r, std_v
 
-# --- KALMAN FİLTRESİ DEĞİŞKENLERİ ---
-# Durum Vektörü [Frekans, Frekans_Değişim_Hızı]
-x_est = np.array([true_freqs[0], 0]) 
-P = np.eye(2) * 1.0              # Kovaryans matrisi
-dt = 1.0                         # Zaman adımı (birim zaman)
-F_mat = np.array([[1, dt],       # Geçiş Matrisi (Sabit Hız Modeli)
-                  [0, 1]])
-H = np.array([[1, 0]])           # Ölçüm Matrisi (Sadece konumu/frekansı ölçüyoruz)
-Q = np.array([[0.01, 0],         # Süreç Gürültüsü (Sistem ne kadar oynak?)
-              [0, 0.01]]) * 1.0 
-R_cov = 0.01                     # Ölçüm Gürültüsü (MLE'ye ne kadar güveniyoruz?)
+class KalmanTracker:
+    def __init__(self, r0, v0):
+        self.x = np.array([[r0], [v0]])
+        self.P = np.eye(2) * 5.0
+        self.F = np.array([[1, dt], [0, 1]])
+        self.Q = np.eye(2) * 0.005 # Process Noise
+        self.R = np.eye(2) * 0.1   # Measurement Noise
+        self.innovation = np.zeros((2, 1))
 
-# --- 2. SİMÜLASYON DÖNGÜSÜ ---
-print("Simülasyon çalışıyor...")
+    def predict(self):
+        self.x = self.F @ self.x
+        self.P = self.F @ self.P @ self.F.T + self.Q
 
-for t_step, true_f in enumerate(true_freqs):
+    def update(self, z):
+        # Inovasyon hesaplama (z - Hx)
+        self.innovation = z.reshape(2,1) - self.x
+        S = self.P + self.R
+        K = self.P @ np.linalg.inv(S)
+        self.x = self.x + K @ self.innovation
+        self.P = (np.eye(2) - K) @ self.P
+
+# --- 3. Simülasyon Döngüsü ---
+steps = 60
+trackers = [KalmanTracker(t["r0"], t["v"]) for t in target_defs]
+std_r_limit, std_v_limit = get_crlb_std(snr_db, B, fc, L, T_chirp)
+
+# Veri Kaydı
+history = {i: {"gt_r":[], "gt_v":[], "kf_r":[], "kf_v":[], "mle_err_r":[], 
+               "innov_r":[], "innov_v":[], "P_r":[], "P_v":[]} for i in range(3)}
+rmse_mle, rmse_kf = [], []
+
+for s in range(steps):
+    data = np.zeros((N, L), dtype=complex)
+    for i, t in enumerate(target_defs):
+        curr_r = t["r0"] + t["v"] * (s * dt)
+        history[i]["gt_r"].append(curr_r); history[i]["gt_v"].append(t["v"])
+        # Sinyal Sentezi
+        t_vec = np.linspace(0, T_chirp, N)
+        for l in range(L):
+            phi = 2 * np.pi * fc * (2 * (curr_r + t["v"] * l * T_chirp) / c)
+            data[:, l] += np.exp(1j*(2*np.pi*(2*slope*curr_r/c)*t_vec + phi))
     
-    # A. Sinyal Oluşturma (Gürültülü)
-    t = np.arange(N) / Fs
-    # Karmaşık sinyal: e^(j*2pi*f*t)
-    clean_sig = np.exp(1j * 2 * np.pi * true_f * t)
-    
-    # Gürültü ekle
-    noise_power = 10**(-SNR_dB / 10)
-    noise = (np.random.randn(N) + 1j * np.random.randn(N)) * np.sqrt(noise_power/2)
-    signal = clean_sig + noise
+    # Gürültü Ekleme
+    data += (np.random.normal(0,1,(N,L)) + 1j*np.random.normal(0,1,(N,L))) / np.sqrt(2 * 10**(snr_db/10))
+    rd_map = np.abs(np.fft.fftshift(np.fft.fft2(data), axes=1))
 
-    # --- YÖNTEM 1: Sadece FFT (Coarse) ---
-    fft_vals = np.abs(np.fft.fft(signal))
-    peak_idx = np.argmax(fft_vals)
-    
-    # FFT Frekans Çözünürlüğü (Bin Width)
-    bin_width = Fs / N
-    f_coarse = peak_idx * bin_width
-    fft_estimates.append(f_coarse)
+    sq_err_mle, sq_err_kf = [], []
 
-    # --- YÖNTEM 2: MLE + Kalman (Fine) ---
-    
-    # Adım 2.1: MLE (Fine Search)
-    # Cost Function: Negatif Korelasyon
-    def mle_cost(f_val):
-        # Tahmini model
-        model = np.exp(1j * 2 * np.pi * f_val * t)
-        # Vektör çarpımı (Correlation)
-        corr = np.abs(np.vdot(signal, model)) # Genliği normalize etmiyoruz, max'ı arıyoruz
-        return -corr 
+    for i in range(3):
+        trackers[i].predict()
+        # MLE Kestirimi (Local Search)
+        r_bin = int((history[i]["gt_r"][-1]*2*slope/c)*N/fs)
+        v_bin = int((history[i]["gt_v"][-1]*2*fc/c)*L*T_chirp + L/2)
+        sub = rd_map[max(0,r_bin-4):min(N,r_bin+4), max(0,v_bin-4):min(L,v_bin+4)]
+        loc = np.unravel_index(np.argmax(sub), sub.shape)
+        
+        m_r = ((r_bin-4+loc[0])/N)*fs*c/(2*slope)
+        m_v = ((v_bin-4+loc[1]-L/2)/(L*T_chirp))*c/(2*fc)
+        
+        # Güncelleme ve Kayıt
+        trackers[i].update(np.array([m_r, m_v]))
+        history[i]["kf_r"].append(trackers[i].x[0,0]); history[i]["kf_v"].append(trackers[i].x[1,0])
+        history[i]["mle_err_r"].append(abs(m_r - history[i]["gt_r"][-1]))
+        history[i]["innov_r"].append(trackers[i].innovation[0,0])
+        history[i]["innov_v"].append(trackers[i].innovation[1,0])
+        history[i]["P_r"].append(trackers[i].P[0,0])
+        history[i]["P_v"].append(trackers[i].P[1,1])
+        
+        sq_err_mle.append((m_r - history[i]["gt_r"][-1])**2)
+        sq_err_kf.append((trackers[i].x[0,0] - history[i]["gt_r"][-1])**2)
 
-    # KRİTİK KISIM: Arama sınırları (Bounds)
-    # FFT sonucunun sadece +/- 0.6 bin sağına soluna bak.
-    # Bu, algoritmanın sonsuza ıraksamasını engeller.
-    search_bounds = [(f_coarse - 0.6*bin_width, f_coarse + 0.6*bin_width)]
-    
-    res = minimize(mle_cost, f_coarse, method='L-BFGS-B', bounds=search_bounds, tol=1e-4)
-    f_fine_mle = res.x[0]
+    rmse_mle.append(np.sqrt(np.mean(sq_err_mle)))
+    rmse_kf.append(np.sqrt(np.mean(sq_err_kf)))
 
-    # Adım 2.2: Kalman Update
-    # 1. Predict
-    x_pred = F_mat @ x_est
-    P_pred = F_mat @ P @ F_mat.T + Q
-    
-    # 2. Update (Measurement = f_fine_mle)
-    y = f_fine_mle - (H @ x_pred)      # Innovation
-    S = H @ P_pred @ H.T + R_cov       # Innovation Covariance
-    K = P_pred @ H.T @ np.linalg.inv(S)# Kalman Gain
-    x_est = x_pred + K @ y             # Updated State
-    P = (np.eye(2) - K @ H) @ P_pred   # Updated Covariance
-    
-    kalman_estimates.append(x_est[0])
+# --- 4. Görselleştirme: FİGÜR 1 (Takip ve Performans) ---
+fig1, axs1 = plt.subplots(2, 2, figsize=(16, 10))
+fig1.suptitle("FMCW Radar: Çoklu Hedef Takibi ve Performans Analizi", fontsize=16)
 
-# --- 3. HATA HESAPLAMA (RMSE) ---
-true_freqs = np.array(true_freqs)
-fft_estimates = np.array(fft_estimates)
-kalman_estimates = np.array(kalman_estimates)
+# A. Mesafe Takibi
+for i, t in enumerate(target_defs):
+    axs1[0, 0].plot(history[i]["gt_r"], 'k--', alpha=0.5, label="Gerçek" if i==0 else "")
+    axs1[0, 0].plot(history[i]["kf_r"], color=t["color"], lw=2, label=f"{t['name']} Takip")
+axs1[0, 0].set_title("Mesafe: Gerçek vs Takip"); axs1[0, 0].legend(); axs1[0, 0].grid(True)
 
-err_fft = true_freqs - fft_estimates
-err_kalman = true_freqs - kalman_estimates
+# B. Hız Takibi
+for i, t in enumerate(target_defs):
+    axs1[0, 1].plot(history[i]["gt_v"], 'k--', alpha=0.5)
+    axs1[0, 1].plot(history[i]["kf_v"], color=t["color"], lw=2)
+axs1[0, 1].set_title("Hız: Gerçek vs Takip"); axs1[0, 1].grid(True)
 
-rmse_fft = np.sqrt(np.mean(err_fft**2))
-rmse_kalman = np.sqrt(np.mean(err_kalman**2))
+# C. Mesafe Hatası vs CRLB
+for i, t in enumerate(target_defs):
+    axs1[1, 0].plot(history[i]["mle_err_r"], 'o', color=t["color"], ms=4, alpha=0.5)
+axs1[1, 0].axhline(y=std_r_limit, color='black', lw=2, label=f"CRLB Alt Sınırı ({std_r_limit:.4f}m)")
+axs1[1, 0].set_title("Mesafe MLE Hatası ve CRLB"); axs1[1, 0].legend(); axs1[1, 0].grid(True)
 
-print("-" * 40)
-print(f"SONUÇLAR (N={N} nokta FFT için):")
-print(f"FFT RMSE Hatası        : {rmse_fft:.4f} Hz")
-print(f"MLE + Kalman RMSE Hatası: {rmse_kalman:.4f} Hz")
-print(f"İyileştirme Oranı      : {rmse_fft / rmse_kalman:.1f} kat daha iyi")
-print("-" * 40)
+# D. RMSE vs Zaman
+axs1[1, 1].plot(rmse_mle, 'r-o', ms=4, alpha=0.6, label="MLE RMSE (Ham)")
+axs1[1, 1].plot(rmse_kf, 'b-s', ms=4, alpha=0.8, label="Kalman RMSE (Filtreli)")
+axs1[1, 1].axhline(y=std_r_limit, color='black', lw=2, ls='--', label="CRLB Limit")
+axs1[1, 1].set_title("RMSE Karşılaştırması"); axs1[1, 1].legend(); axs1[1, 1].grid(True)
 
-# --- 4. GRAFİK ÇİZİMİ ---
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+# --- 5. Görselleştirme: FİGÜR 2 (Filtre Teşhisi) ---
+fig2, axs2 = plt.subplots(2, 2, figsize=(16, 10))
+fig2.suptitle("Kalman Filtresi Teşhis ve Kararlılık Analizi", fontsize=16)
 
-# Üst Grafik: Yörünge Takibi
-ax1.plot(true_freqs, 'k--', label='Gerçek Konum (Ground Truth)', linewidth=2)
-ax1.plot(fft_estimates, 'o-', label='Sadece FFT (Quantized)', alpha=0.5, markersize=4)
-ax1.plot(kalman_estimates, 'r-', label='MLE + Kalman (Filtered)', linewidth=2)
-ax1.set_ylabel('Frekans (Konum)')
-ax1.set_title(f'FMCW Takip Performansı (N={N})')
-ax1.legend()
-ax1.grid(True)
+# A. Mesafe İnovasyonu
+for i, t in enumerate(target_defs):
+    axs2[0, 0].plot(history[i]["innov_r"], color=t["color"], alpha=0.7, label=t['name'])
+axs2[0, 0].axhline(0, color='black', ls='--')
+axs2[0, 0].set_title("Mesafe İnovasyonu (Residuals)"); axs2[0, 0].legend(); axs2[0, 0].grid(True)
 
-# Alt Grafik: Hata Miktarı
-ax2.plot(err_fft, 'o-', label='FFT Hatası', alpha=0.5)
-ax2.plot(err_kalman, 'r-', label='MLE+Kalman Hatası', linewidth=2)
-ax2.axhline(0, color='black', linewidth=1)
-ax2.set_ylabel('Hata (Hz)')
-ax2.set_xlabel('Zaman Adımı')
-ax2.set_title('Gerçek Konuma Göre Hata Miktarı')
-ax2.legend()
-ax2.grid(True)
+# B. Hız İnovasyonu
+for i, t in enumerate(target_defs):
+    axs2[0, 1].plot(history[i]["innov_v"], color=t["color"], alpha=0.7)
+axs2[0, 1].axhline(0, color='black', ls='--')
+axs2[0, 1].set_title("Hız İnovasyonu (Residuals)"); axs2[0, 1].grid(True)
+
+# C. P Matrisi Yakınsaması (Mesafe)
+for i, t in enumerate(target_defs):
+    axs2[1, 0].plot(history[i]["P_r"], color=t["color"], lw=2)
+axs2[1, 0].set_title("Mesafe Belirsizliği Yakınsaması ($P_{11}$)"); axs2[1, 0].set_ylabel("Varyans"); axs2[1, 0].grid(True)
+
+# D. P Matrisi Yakınsaması (Hız)
+for i, t in enumerate(target_defs):
+    axs2[1, 1].plot(history[i]["P_v"], color=t["color"], lw=2)
+axs2[1, 1].set_title("Hız Belirsizliği Yakınsaması ($P_{22}$)"); axs2[1, 1].set_ylabel("Varyans"); axs2[1, 1].grid(True)
 
 plt.tight_layout()
 plt.show()
