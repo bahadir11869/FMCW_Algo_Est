@@ -2,152 +2,154 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.constants import c
 
-# --- 1. Sistem ve Hedef Parametreleri ---
+# --- 1. Parametreler ---
 fs, T_chirp, B, fc = 2e6, 0.25e-3, 150e6, 24e9
 L, N = 64, int(fs * T_chirp)
 slope, dt = B / T_chirp, L * T_chirp
-snr_db = 20 
+snr_db = 12 
+num_trials = 10 
 
 target_defs = [
-    {"r0": 25.0, "v": 4.5,  "color": 'blue',   "name": "Hedef 1"},
-    {"r0": 50.0, "v": -2.0, "color": 'green',  "name": "Hedef 2"},
-    {"r0": 75.0, "v": 8.5,  "color": 'red',    "name": "Hedef 3"}
+    {"r0": 25.0, "v": 4.5,  "color": 'blue',   "name": "H1"},
+    {"r0": 50.0, "v": -2.0, "color": 'green',  "name": "H2"},
+    {"r0": 75.0, "v": 8.5,  "color": 'red',    "name": "H3"}
 ]
 
-# --- 2. Yardımcı Fonksiyonlar ve Kalman Sınıfı ---
+# --- 2. Fonksiyonlar ve Kalman Sınıfı ---
 def get_crlb_std(snr_db, B, fc, L, T_chirp):
     snr_lin = 10**(snr_db / 10)
-    std_r = c / (2 * np.pi * B * np.sqrt(2 * snr_lin))
-    std_v = c / (2 * np.pi * fc * (L * T_chirp) * np.sqrt(2 * snr_lin))
-    return std_r, std_v
+    return c / (2 * np.pi * B * np.sqrt(2 * snr_lin))
 
 class KalmanTracker:
     def __init__(self, r0, v0):
         self.x = np.array([[r0], [v0]])
         self.P = np.eye(2) * 5.0
         self.F = np.array([[1, dt], [0, 1]])
-        self.Q = np.eye(2) * 0.005 # Process Noise
-        self.R = np.eye(2) * 0.1   # Measurement Noise
-        self.innovation = np.zeros((2, 1))
+        self.Q = np.eye(2) * 0.01 
+        self.R = np.eye(2) * 0.1   
+        self.innov = np.zeros((2,1))
 
     def predict(self):
         self.x = self.F @ self.x
         self.P = self.F @ self.P @ self.F.T + self.Q
+        return self.x, self.P
 
     def update(self, z):
-        # Inovasyon hesaplama (z - Hx)
-        self.innovation = z.reshape(2,1) - self.x
+        self.innov = z.reshape(2,1) - self.x
         S = self.P + self.R
         K = self.P @ np.linalg.inv(S)
-        self.x = self.x + K @ self.innovation
+        self.x = self.x + K @ (z.reshape(2,1) - self.x)
         self.P = (np.eye(2) - K) @ self.P
 
-# --- 3. Simülasyon Döngüsü ---
+# --- 3. Veri Yapıları ---
 steps = 60
-trackers = [KalmanTracker(t["r0"], t["v"]) for t in target_defs]
-std_r_limit, std_v_limit = get_crlb_std(snr_db, B, fc, L, T_chirp)
+std_r_limit = get_crlb_std(snr_db, B, fc, L, T_chirp)
 
-# Veri Kaydı
-history = {i: {"gt_r":[], "gt_v":[], "kf_r":[], "kf_v":[], "mle_err_r":[], 
-               "innov_r":[], "innov_v":[], "P_r":[], "P_v":[]} for i in range(3)}
-rmse_mle, rmse_kf = [], []
+mle_r_all = np.zeros((num_trials, len(target_defs), steps))
+map_r_all = np.zeros((num_trials, len(target_defs), steps))
+mle_v_all = np.zeros((num_trials, len(target_defs), steps))
+map_v_all = np.zeros((num_trials, len(target_defs), steps))
+mle_err_all = np.zeros((num_trials, len(target_defs), steps))
+map_err_all = np.zeros((num_trials, len(target_defs), steps))
+mle_P_all = np.zeros((num_trials, len(target_defs), steps))
+map_P_all = np.zeros((num_trials, len(target_defs), steps))
 
-for s in range(steps):
-    data = np.zeros((N, L), dtype=complex)
-    for i, t in enumerate(target_defs):
-        curr_r = t["r0"] + t["v"] * (s * dt)
-        history[i]["gt_r"].append(curr_r); history[i]["gt_v"].append(t["v"])
-        # Sinyal Sentezi
-        t_vec = np.linspace(0, T_chirp, N)
-        for l in range(L):
-            phi = 2 * np.pi * fc * (2 * (curr_r + t["v"] * l * T_chirp) / c)
-            data[:, l] += np.exp(1j*(2*np.pi*(2*slope*curr_r/c)*t_vec + phi))
+# --- 4. Monte Carlo Simülasyonu ---
+print(f"Simülasyon başladı: {num_trials} deneme yapılıyor...")
+for tr in range(num_trials):
+    trackers_mle = [KalmanTracker(t["r0"], t["v"]) for t in target_defs]
+    trackers_map = [KalmanTracker(t["r0"], t["v"]) for t in target_defs]
     
-    # Gürültü Ekleme
-    data += (np.random.normal(0,1,(N,L)) + 1j*np.random.normal(0,1,(N,L))) / np.sqrt(2 * 10**(snr_db/10))
-    rd_map = np.abs(np.fft.fftshift(np.fft.fft2(data), axes=1))
-
-    sq_err_mle, sq_err_kf = [], []
-
-    for i in range(3):
-        trackers[i].predict()
-        # MLE Kestirimi (Local Search)
-        r_bin = int((history[i]["gt_r"][-1]*2*slope/c)*N/fs)
-        v_bin = int((history[i]["gt_v"][-1]*2*fc/c)*L*T_chirp + L/2)
-        sub = rd_map[max(0,r_bin-4):min(N,r_bin+4), max(0,v_bin-4):min(L,v_bin+4)]
-        loc = np.unravel_index(np.argmax(sub), sub.shape)
+    for s in range(steps):
+        data = np.zeros((N, L), dtype=complex)
+        for i, t in enumerate(target_defs):
+            curr_r = t["r0"] + t["v"] * (s * dt)
+            t_vec = np.linspace(0, T_chirp, N)
+            for l in range(L):
+                phi = 2 * np.pi * fc * (2 * (curr_r + t["v"] * l * T_chirp) / c)
+                data[:, l] += np.exp(1j*(2*np.pi*(2*slope*curr_r/c)*t_vec + phi))
         
-        m_r = ((r_bin-4+loc[0])/N)*fs*c/(2*slope)
-        m_v = ((v_bin-4+loc[1]-L/2)/(L*T_chirp))*c/(2*fc)
-        
-        # Güncelleme ve Kayıt
-        trackers[i].update(np.array([m_r, m_v]))
-        history[i]["kf_r"].append(trackers[i].x[0,0]); history[i]["kf_v"].append(trackers[i].x[1,0])
-        history[i]["mle_err_r"].append(abs(m_r - history[i]["gt_r"][-1]))
-        history[i]["innov_r"].append(trackers[i].innovation[0,0])
-        history[i]["innov_v"].append(trackers[i].innovation[1,0])
-        history[i]["P_r"].append(trackers[i].P[0,0])
-        history[i]["P_v"].append(trackers[i].P[1,1])
-        
-        sq_err_mle.append((m_r - history[i]["gt_r"][-1])**2)
-        sq_err_kf.append((trackers[i].x[0,0] - history[i]["gt_r"][-1])**2)
+        data += (np.random.normal(0,1,(N,L)) + 1j*np.random.normal(0,1,(N,L))) / np.sqrt(2 * 10**(snr_db/10))
+        rd_map = np.abs(np.fft.fftshift(np.fft.fft2(data), axes=1))
 
-    rmse_mle.append(np.sqrt(np.mean(sq_err_mle)))
-    rmse_kf.append(np.sqrt(np.mean(sq_err_kf)))
+        for i in range(len(target_defs)):
+            xm_p, _ = trackers_mle[i].predict()
+            xa_p, Pa_p = trackers_map[i].predict()
 
-# --- 4. Görselleştirme: FİGÜR 1 (Takip ve Performans) ---
-fig1, axs1 = plt.subplots(2, 2, figsize=(16, 10))
-fig1.suptitle("FMCW Radar: Çoklu Hedef Takibi ve Performans Analizi", fontsize=16)
+            gt_r = target_defs[i]["r0"] + target_defs[i]["v"] * (s * dt)
+            r_bin = int((gt_r*2*slope/c)*N/fs)
+            v_bin = int((target_defs[i]["v"]*2*fc/c)*L*T_chirp + L/2)
+            
+            window = rd_map[max(0,r_bin-10):min(N,r_bin+10), v_bin-2:v_bin+2]
+            r_axis = np.linspace((max(0,r_bin-10))/N*fs*c/(2*slope), (min(N,r_bin+10)-1)/N*fs*c/(2*slope), window.shape[0])
 
-# A. Mesafe Takibi
+            mle_r = r_axis[np.argmax(window.max(axis=1))]
+            prior_var = Pa_p[0,0] + 0.5 
+            prior = np.exp(-((r_axis - xa_p[0,0])**2) / (2 * prior_var))
+            map_r = r_axis[np.argmax(window.max(axis=1) * prior)]
+
+            trackers_mle[i].update(np.array([mle_r, target_defs[i]["v"]]))
+            trackers_map[i].update(np.array([map_r, target_defs[i]["v"]]))
+
+            mle_r_all[tr, i, s] = trackers_mle[i].x[0,0]
+            map_r_all[tr, i, s] = trackers_map[i].x[0,0]
+            mle_v_all[tr, i, s] = trackers_mle[i].x[1,0]
+            map_v_all[tr, i, s] = trackers_map[i].x[1,0]
+            mle_err_all[tr, i, s] = abs(mle_r - gt_r)
+            map_err_all[tr, i, s] = abs(map_r - gt_r)
+            mle_P_all[tr, i, s] = trackers_mle[i].P[0,0]
+            map_P_all[tr, i, s] = trackers_map[i].P[0,0]
+
+# --- 5. Ortalamalar ---
+mean_mle_r, mean_map_r = np.mean(mle_r_all, axis=0), np.mean(map_r_all, axis=0)
+mean_mle_v, mean_map_v = np.mean(mle_v_all, axis=0), np.mean(map_v_all, axis=0)
+mean_mle_err, mean_map_err = np.mean(mle_err_all, axis=0), np.mean(map_err_all, axis=0)
+mean_mle_P, mean_map_P = np.mean(mle_P_all, axis=0), np.mean(map_P_all, axis=0)
+
+# --- 6. GÖRSELLEŞTİRME ---
+fig1, axs1 = plt.subplots(2, 2, figsize=(16, 11))
+fig1.suptitle(f"FMCW Radar: MLE vs MAP Monte Carlo Analizi ({num_trials} Deneme Ortalaması)", fontsize=14)
+
 for i, t in enumerate(target_defs):
-    axs1[0, 0].plot(history[i]["gt_r"], 'k--', alpha=0.5, label="Gerçek" if i==0 else "")
-    axs1[0, 0].plot(history[i]["kf_r"], color=t["color"], lw=2, label=f"{t['name']} Takip")
-axs1[0, 0].set_title("Mesafe: Gerçek vs Takip"); axs1[0, 0].legend(); axs1[0, 0].grid(True)
+    gt_r_path = [t["r0"] + t["v"] * (s * dt) for s in range(steps)]
+    # Sol Üst: Mesafe
+    axs1[0,0].plot(gt_r_path, 'k--', alpha=0.3, label="Gerçek" if i==0 else "")
+    axs1[0,0].plot(mean_mle_r[i], color=t['color'], ls=':', label=f"{t['name']} MLE-KF")
+    axs1[0,0].plot(mean_map_r[i], color=t['color'], ls='-', lw=2, label=f"{t['name']} MAP-KF")
+    axs1[0,0].set_xlabel("Adım (Step)"); axs1[0,0].set_ylabel("Mesafe (m)")
+    
+    # Sağ Üst: Hız
+    axs1[0,1].plot([t["v"]]*steps, 'k--', alpha=0.3, label="Gerçek" if i==0 else "")
+    axs1[0,1].plot(mean_mle_v[i], color=t['color'], ls=':', alpha=0.5,  label=f"{t['name']} MLE-KF")
+    axs1[0,1].plot(mean_map_v[i], color=t['color'], ls='-', alpha=0.8 , label=f"{t['name']} MAP-KF")
+    axs1[0,1].set_xlabel("Adım (Step)"); axs1[0,1].set_ylabel("Hız (m/s)")
 
-# B. Hız Takibi
+    # Sol Alt: Hata
+    axs1[1,0].plot(mean_mle_err[i], color=t['color'], ls=':', alpha=0.3,label=f"{t['name']} MAP-KF")
+    axs1[1,0].plot(mean_map_err[i], color=t['color'], ls='-', alpha=0.6,label=f"{t['name']} MLE-KF")
+    axs1[1,0].set_xlabel("Adım (Step)"); axs1[1,0].set_ylabel("Ortalama Hata (m)")
+
+axs1[1,0].axhline(y=std_r_limit, color='black', lw=2, label=f"CRLB ({std_r_limit:.3f}m)")
+
+# Sağ Alt: RMSE
+axs1[1,1].plot(np.mean(mean_mle_err, axis=0), 'r--', label="Avg MLE RMSE")
+axs1[1,1].plot(np.mean(mean_map_err, axis=0), 'b-', label="Avg MAP RMSE")
+axs1[1,1].set_xlabel("Adım (Step)"); axs1[1,1].set_ylabel("RMSE (m)")
+axs1[1,1].set_title("Sistem Geneli Ortalama Hata")
+
+for ax in axs1.flat: ax.grid(True); ax.legend(fontsize='x-small')
+
+# FIG 2: Kovaryans
+fig2, axs2 = plt.subplots(1, 2, figsize=(16, 6))
+fig2.suptitle("Filtre Sağlığı: Kovaryans Yakınsaması", fontsize=14)
 for i, t in enumerate(target_defs):
-    axs1[0, 1].plot(history[i]["gt_v"], 'k--', alpha=0.5)
-    axs1[0, 1].plot(history[i]["kf_v"], color=t["color"], lw=2)
-axs1[0, 1].set_title("Hız: Gerçek vs Takip"); axs1[0, 1].grid(True)
+    axs2[0].plot(mean_mle_P[i], color=t['color'], ls=':')
+    axs2[1].plot(mean_map_P[i], color=t['color'], ls='-')
 
-# C. Mesafe Hatası vs CRLB
-for i, t in enumerate(target_defs):
-    axs1[1, 0].plot(history[i]["mle_err_r"], 'o', color=t["color"], ms=4, alpha=0.5)
-axs1[1, 0].axhline(y=std_r_limit, color='black', lw=2, label=f"CRLB Alt Sınırı ({std_r_limit:.4f}m)")
-axs1[1, 0].set_title("Mesafe MLE Hatası ve CRLB"); axs1[1, 0].legend(); axs1[1, 0].grid(True)
-
-# D. RMSE vs Zaman
-axs1[1, 1].plot(rmse_mle, 'r-o', ms=4, alpha=0.6, label="MLE RMSE (Ham)")
-axs1[1, 1].plot(rmse_kf, 'b-s', ms=4, alpha=0.8, label="Kalman RMSE (Filtreli)")
-axs1[1, 1].axhline(y=std_r_limit, color='black', lw=2, ls='--', label="CRLB Limit")
-axs1[1, 1].set_title("RMSE Karşılaştırması"); axs1[1, 1].legend(); axs1[1, 1].grid(True)
-
-# --- 5. Görselleştirme: FİGÜR 2 (Filtre Teşhisi) ---
-fig2, axs2 = plt.subplots(2, 2, figsize=(16, 10))
-fig2.suptitle("Kalman Filtresi Teşhis ve Kararlılık Analizi", fontsize=16)
-
-# A. Mesafe İnovasyonu
-for i, t in enumerate(target_defs):
-    axs2[0, 0].plot(history[i]["innov_r"], color=t["color"], alpha=0.7, label=t['name'])
-axs2[0, 0].axhline(0, color='black', ls='--')
-axs2[0, 0].set_title("Mesafe İnovasyonu (Residuals)"); axs2[0, 0].legend(); axs2[0, 0].grid(True)
-
-# B. Hız İnovasyonu
-for i, t in enumerate(target_defs):
-    axs2[0, 1].plot(history[i]["innov_v"], color=t["color"], alpha=0.7)
-axs2[0, 1].axhline(0, color='black', ls='--')
-axs2[0, 1].set_title("Hız İnovasyonu (Residuals)"); axs2[0, 1].grid(True)
-
-# C. P Matrisi Yakınsaması (Mesafe)
-for i, t in enumerate(target_defs):
-    axs2[1, 0].plot(history[i]["P_r"], color=t["color"], lw=2)
-axs2[1, 0].set_title("Mesafe Belirsizliği Yakınsaması ($P_{11}$)"); axs2[1, 0].set_ylabel("Varyans"); axs2[1, 0].grid(True)
-
-# D. P Matrisi Yakınsaması (Hız)
-for i, t in enumerate(target_defs):
-    axs2[1, 1].plot(history[i]["P_v"], color=t["color"], lw=2)
-axs2[1, 1].set_title("Hız Belirsizliği Yakınsaması ($P_{22}$)"); axs2[1, 1].set_ylabel("Varyans"); axs2[1, 1].grid(True)
+axs2[0].set_title("Kovaryans (MLE-KF)"); axs2[1].set_title("Kovaryans (MAP-KF)")
+for ax in axs2: 
+    ax.set_xlabel("Adım (Step)"); ax.set_ylabel("Varyans ($m^2$)")
+    ax.grid(True)
 
 plt.tight_layout()
 plt.show()
