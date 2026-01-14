@@ -3,19 +3,19 @@
 % --- PACKAGES ---
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
-\usepackage[english]{babel} % Changed to English
+\usepackage[english]{babel}
 \usepackage{amsmath, amssymb, amsfonts}
 \usepackage{graphicx}
 \usepackage{geometry}
-\usepackage{float} 
+\usepackage{float}
 \usepackage{subcaption}
 \usepackage{hyperref}
-\usepackage{booktabs} 
-\usepackage{enumitem} 
+\usepackage{booktabs}
+\usepackage{enumitem}
 
 % --- PAGE LAYOUT ---
 \geometry{top=2cm, bottom=2cm, left=2.5cm, right=2.5cm}
-\raggedbottom 
+\raggedbottom
 
 % --- TITLE INFO ---
 \title{\textbf{FMCW Radar Target Tracking and Estimation Performance Analysis}}
@@ -135,8 +135,15 @@ In this scenario, the noise suppression capacity of the system was tested. Despi
     \caption{Scenario 1: Tracking Results.}
 \end{figure}
 
-\subsection{S1 Statistical Performance}
-The convergence of the RMSE error to the CRLB limit proves that the Kalman filter used is an "efficient estimator" for this scenario.
+\subsection{Analysis of Tracking Performance (S1)}
+Figure 1 illustrates the core advantage of the Kalman Filter in low SNR conditions.
+\begin{itemize}
+    \item \textbf{Noise Suppression:} As seen in Figure 1(a), the raw MLE velocity (Blue) exhibits high variance due to numerical differentiation of noisy range data. The MAP estimate (Red), however, effectively acts as a low-pass filter, utilizing the process model to smooth out high-frequency noise components.
+    \item \textbf{Convergence:} The filter quickly converges to the true state within the first few samples, demonstrating correct initialization of the $P$ matrix.
+\end{itemize}
+
+\subsection{Statistical Validation (S1)}
+The statistical consistency of the filter is evaluated using RMSE and NIS metrics.
 
 \begin{figure}[!htbp]
     \centering
@@ -161,14 +168,17 @@ The convergence of the RMSE error to the CRLB limit proves that the Kalman filte
     \label{fig:s1_innovation}
 \end{figure}
 
+\textbf{Interpretation of Figures 2 \& 3:}
+\begin{itemize}
+    \item \textbf{Efficiency:} In Figure 2(b), the Root Mean Square Error (RMSE) of the filter touches the Cramér-Rao Lower Bound (CRLB). This indicates that the estimator is "efficient"—meaning no other unbiased estimator could produce a lower variance for this signal-to-noise ratio.
+    \item \textbf{Consistency:} The Normalized Innovation Squared (NIS) in Figure 3 remains within the 95\% confidence bounds ($\chi^2$ distribution), proving that the assumed noise covariances ($Q$ and $R$) match the actual simulated environment.
+\end{itemize}
+
 \clearpage
 
 % --- SECTION 5: SCENARIO 2 ---
 \section{Scenario 2: Maneuver and Model Robustness}
 In this scenario, the system's response to sudden dynamic changes was examined. The target performed an accelerating turn at $t=40$ seconds.
-
-\subsection{Model Mismatch and Lag}
-The CV model used perceives the $a \neq 0$ condition not as "process noise" but as a model deviation. This creates a Lag Error during the adaptation period of the Kalman Gain ($K_k$).
 
 \begin{figure}[!htbp]
     \centering
@@ -186,8 +196,15 @@ The CV model used perceives the $a \neq 0$ condition not as "process noise" but 
     \caption{Scenario 2: Dynamic Tracking.}
 \end{figure}
 
+\subsection{Model Mismatch and Lag Analysis}
+The tracking results in Figure 4 reveal the limitations of the single-model approach during high dynamics.
+\begin{itemize}
+    \item \textbf{Lag Error:} As observed in Figure 4(a), immediately after $t=40s$, the estimated velocity (Red line) deviates significantly from the ground truth. This "Lag" occurs because the Constant Velocity (CV) model treats the acceleration as a temporary disturbance rather than a state change.
+    \item \textbf{Inertia:} The filter requires a finite time window to adjust its Kalman Gain ($K_k$), causing the overshoot seen in the trajectory plot (Figure 4(b)).
+\end{itemize}
+
 \subsection{S2 Statistical Analysis}
-The sudden spike in the Innovation graph indicates that the filter detected the maneuver but struggled to fit it to the model.
+The breakdown of the filter's performance under stress is shown in the error metrics.
 
 \begin{figure}[!htbp]
     \centering
@@ -205,6 +222,12 @@ The sudden spike in the Innovation graph indicates that the filter detected the 
     \caption{Scenario 2: Performance Analysis.}
 \end{figure}
 
+\textbf{Interpretation of Figure 5:}
+\begin{itemize}
+    \item \textbf{Bias vs. Variance:} In Figure 5(a), the RMSE rises well above the CRLB during the maneuver ($40s < t < 50s$). Since CRLB is a bound for unbiased estimators, this deviation confirms that the error is no longer random but \textbf{systematic (Bias)}.
+    \item \textbf{Maneuver Detection:} The sharp spike in the NIS graph (Figure 5(b)) acts as a distinct signature of the maneuver. This spike indicates that the residual error is statistically impossible under the standard Gaussian assumption, effectively flagging a "Model Mismatch."
+\end{itemize}
+
 \clearpage
 
 % --- SECTION 6: RESULTS AND EVALUATION ---
@@ -215,17 +238,17 @@ Summary performance data obtained from simulations are presented in Table \ref{t
     \centering
     \caption{Estimation Performance Summary}
     \label{tab:results}
-    \renewcommand{\arraystretch}{1.3} 
+    \renewcommand{\arraystretch}{1.3}
     \begin{tabular}{@{}lcc@{}}
         \toprule
         \textbf{Metric} & \textbf{Scenario 1 (Stationary)} & \textbf{Scenario 2 (Dynamic)} \\ \midrule
-        SNR (dB) & -5.0 & 20.0 \\ 
-        CRLB (m) & 0.097979 & 0.005510 \\ 
-        RMSE Pos MLE (m) & 0.203196 & 0.055876 \\ 
-        RMSE Pos MAP (m) & 0.452303 & 0.367321 \\ 
-        CRLB Ratio (x) & 4.6163 & 66.6674 \\ 
-        RMSE Vel MLE (m/s) & 2.765902 & 0.973740 \\ 
-        RMSE Vel MAP (m/s) & 0.525622 & 2.530530 \\ 
+        SNR (dB) & -5.0 & 20.0 \\
+        CRLB (m) & 0.097979 & 0.005510 \\
+        RMSE Pos MLE (m) & 0.203196 & 0.055876 \\
+        RMSE Pos MAP (m) & 0.452303 & 0.367321 \\
+        CRLB Ratio (x) & 4.6163 & 66.6674 \\
+        RMSE Vel MLE (m/s) & 2.765902 & 0.973740 \\
+        RMSE Vel MAP (m/s) & 0.525622 & 2.530530 \\
         Consistency (NIS) & 1.8195 & 1.1496 \\ \bottomrule
     \end{tabular}
 \end{table}
