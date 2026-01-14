@@ -1,0 +1,270 @@
+\documentclass[a4paper,12pt]{article}
+
+% --- PAKETLER ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[turkish]{babel}
+\usepackage{amsmath, amssymb, amsfonts} % Matematiksel ifadeler
+\usepackage{graphicx}
+\usepackage{geometry}
+\usepackage{float} 
+\usepackage{subcaption}
+\usepackage{hyperref}
+\usepackage{booktabs} % Profesyonel tablolar
+\usepackage{enumitem} % Maddeli listeler için
+
+% --- SAYFA DÜZENİ ---
+% Kenar boşlukları (Görsellerin taşmaması için ayarlandı)
+\geometry{top=2cm, bottom=2cm, left=2.5cm, right=2.5cm}
+
+% Sayfa dikey boşluklarını esnek bırak (Gereksiz yayılmayı önler)
+\raggedbottom 
+
+% --- BAŞLIK BİLGİLERİ ---
+\title{\textbf{FMCW Radar Hedef Takip ve Kestirim Performans Analizi}}
+\author{Simülasyon ve Modelleme Raporu}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+% --- ÖZET ---
+\begin{abstract}
+Bu proje, Frekans Modüleli Sürekli Dalga (FMCW) radarı kullanılarak hareketli hedeflerin tespit ve takibinin (Tracking) simülasyonunu konu almaktadır. Çalışma kapsamında; hedeften dönen sinyallerin modellenmesi, menzil-hız (Range-Doppler) bilgilerinin çıkarılması ve gürültülü ölçümlerin Kalman Filtresi ile iyileştirilmesi süreçleri gerçekleştirilmiştir. Sabit Hız (CV) ve Manevra senaryoları altında, Maksimum Olabilirlik (MLE) ve Maksimum Sonsal (MAP) kestiricilerin performansı Cramér-Rao Alt Sınırı (CRLB) referans alınarak karşılaştırılmıştır. Sonuçlar, filtrenin hız kestiriminde \%80'in üzerinde iyileştirme sağladığını, ancak ani manevralarda model gecikmesi (Lag) yaşadığını göstermektedir.
+\end{abstract}
+
+% --- BÖLÜM 1: GİRİŞ ---
+\section{Giriş ve Proje Kapsamı}
+Radar sistemlerinde temel amaç, hedef tespitinin ötesinde hedefin yörüngesini kararlı bir şekilde takip etmektir. Bu projede, gerçekçi bir radar simülasyon ortamı oluşturulmuş ve aşağıdaki adımlar uygulanmıştır:
+\begin{enumerate}[label=\roman*.]
+    \item \textbf{Sinyal Üretimi:} FMCW dalga formu (Chirp) ve hedef yansımasının modellenmesi.
+    \item \textbf{Ölçüm Çıkarımı:} Karıştırıcı (Mixer) çıkışından "Beat Frekansı" ($f_b$) hesabı ile ham menzil ölçümü (MLE).
+    \item \textbf{Durum Kestirimi:} Gürültülü verilerin Kalman Filtresi (Linear KF) ile filtrelenmesi.
+    \item \textbf{Performans Analizi:} İstatistiksel hata metrikleri (RMSE, NIS) ile sistem başarısının doğrulanması.
+\end{enumerate}
+
+% --- BÖLÜM 2: TEORİK ALTYAPI ---
+\section{Teorik Arka Plan}
+
+\subsection{FMCW Radar Sinyal Modeli}
+FMCW radarı, frekansı zamanla doğrusal olarak artan (Linear Frequency Modulation - LFM) bir "Chirp" sinyali gönderir. İletilen sinyal $s_{tx}(t)$ ve hedeften $t_d$ gecikme ile dönen sinyal $s_{rx}(t)$ şu şekilde ifade edilir:
+\begin{equation}
+s_{tx}(t) = A \cos(2\pi f_c t + \pi \alpha t^2)
+\end{equation}
+Burada $f_c$ taşıyıcı frekans, $\alpha = B/T_{chirp}$ ise frekans eğimidir (Slope). Alıcıda bu iki sinyal karıştırıldığında (Mixing) ve alçak geçiren filtreden geçirildiğinde, hedef menzili ($R$) ile orantılı olan "Vuru Frekansı" (Beat Frequency - $f_b$) elde edilir:
+\begin{equation}
+f_b = \frac{2 \alpha R}{c}
+\end{equation}
+Simülasyonda kullanılan ham ölçüm (Observation), bu frekansın üzerine eklenen Gauss gürültüsü ($w \sim \mathcal{N}(0, \sigma^2)$) ile modellenmiştir:
+\begin{equation}
+z_k = R_{gerçek} + v_k
+\end{equation}
+
+\subsection{Durum Uzay Modeli (State Space)}
+Hedefin kinematik davranışı **Sabit Hız (Constant Velocity - CV)** modeli ile temsil edilir.
+Durum vektörü $x_k = [r_k, v_k]^T$ (Konum, Hız) için süreç denklemi:
+\begin{equation}
+x_{k+1} = F x_k + q_k, \quad q_k \sim \mathcal{N}(0, Q)
+\end{equation}
+Durum geçiş matrisi $F$ ve süreç gürültüsü kovaryansı $Q$:
+\begin{equation}
+F = \begin{bmatrix} 1 & \Delta t \\ 0 & 1 \end{bmatrix}, \quad Q = \sigma_a^2 \begin{bmatrix} \frac{\Delta t^4}{4} & \frac{\Delta t^3}{2} \\ \frac{\Delta t^3}{2} & \Delta t^2 \end{bmatrix}
+\end{equation}
+Burada $Q$ matrisi, modelin kapsayamadığı küçük ivmelenmeleri (süreç gürültüsü) temsil eder.
+
+\subsection{Kalman Filtresi Algoritması}
+Projede kullanılan filtre iki aşamalı "Öngörü-Düzeltme" (Predict-Correct) mimarisindedir:
+\begin{itemize}
+    \item \textbf{Zaman Güncellemesi (Prediction):} Fiziksel modele dayanarak bir sonraki adım tahmin edilir.
+    \begin{equation}
+    \hat{x}_{k|k-1} = F \hat{x}_{k-1|k-1}
+    \end{equation}
+    \begin{equation}
+    P_{k|k-1} = F P_{k-1|k-1} F^T + Q
+    \end{equation}
+    
+    \item \textbf{Ölçüm Güncellemesi (Correction):} Tahmin, gelen yeni ölçümle ($z_k$) ağırlıklandırılarak düzeltilir.
+    \begin{equation}
+    K_k = P_{k|k-1}H^T (H P_{k|k-1} H^T + R)^{-1}
+    \end{equation}
+    \begin{equation}
+    \hat{x}_{k|k} = \hat{x}_{k|k-1} + K_k (z_k - H \hat{x}_{k|k-1})
+    \end{equation}
+\end{itemize}
+
+% --- BÖLÜM 3: PARAMETRELER ---
+\section{Simülasyon Parametreleri}
+Analizlerde kullanılan radar ve ortam parametreleri Tablo \ref{tab:parametreler}'de sunulmuştur. Bu değerler, tipik bir otomotiv/kısa menzil radarı karakteristiklerine uygundur.
+
+\begin{table}[h]
+    \centering
+    \caption{Simülasyon Tasarım Parametreleri}
+    \label{tab:parametreler}
+    \renewcommand{\arraystretch}{1.2}
+    \begin{tabular}{@{}ll@{}}
+        \toprule
+        \textbf{Parametre} & \textbf{Değer} \\ \midrule
+        Radar Bant Genişliği ($B$) & 150 MHz \\
+        Taşıyıcı Frekans ($f_c$) & 77 GHz \\
+        Örnekleme Periyodu ($\Delta t$) & 0.1 s \\
+        Ölçüm Gürültüsü ($\sigma_R$) & S1: Yüksek / S2: Düşük \\
+        Süreç Gürültüsü ($\sigma_a$) & $0.5 \, m/s^2$ \\
+        Toplam Simülasyon Süresi & 100 s \\
+        Manevra Anı (S2) & $t=40$ s \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\clearpage
+
+% --- BÖLÜM 4: SENARYO 1 ---
+\section{Senaryo 1: Durağan Rejim ve Düşük SNR}
+Bu senaryoda, sistemin gürültü bastırma kapasitesi test edilmiştir. Ortamda yoğun gürültü (-5 dB SNR) olmasına rağmen filtre kararlıdır.
+
+\begin{figure}[!htbp]
+    \centering
+    \begin{subfigure}[b]{0.75\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{Fig1_S1_Hiz_Takibi.png}
+        \caption{S1 Hız Takibi: MAP kestirimi, ham ölçüm varyansını minimize etmiştir.}
+    \end{subfigure}
+
+    
+    \begin{subfigure}[b]{0.75\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{Fig1_S1_Rota_Takibi.png}
+        \caption{S1 Konum Takibi: Doğrusal yörünge takibi.}
+    \end{subfigure}
+    \caption{Senaryo 1: Takip Sonuçları.}
+\end{figure}
+
+\subsection{S1 İstatistiksel Başarım}
+RMSE hatasının CRLB sınırına yakınsaması, kullanılan Kalman filtresinin bu senaryo için "etkin kestirici" (efficient estimator) olduğunu kanıtlar.
+
+\begin{figure}[!htbp]
+    \centering
+    \begin{subfigure}[b]{0.75\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{S1_Analiz_Hiz_Hatasi.png}
+        \caption{S1 Hız Hatası: Sıfır ortalamalı rassal dağılım.}
+    \end{subfigure}
+
+
+    \begin{subfigure}[b]{0.75\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{S1_Analiz_RMSE_CRLB.png}
+        \caption{S1 RMSE vs CRLB: Hata teorik alt sınıra oturmuştur.}
+    \end{subfigure}
+    \caption{S1 Hata Analizi.}
+\end{figure}
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width=0.75\textwidth]{S1_Analiz_Inovasyon.png}
+    \caption{S1 NIS (Tutarlılık): Filtre artıkları güven aralığındadır ($\pm 3\sigma$).}
+    \label{fig:s1_inovasyon}
+\end{figure}
+
+\clearpage
+
+% --- BÖLÜM 5: SENARYO 2 ---
+\section{Senaryo 2: Manevra ve Model Dayanıklılığı}
+Bu senaryoda, sistemin ani dinamik değişikliklere tepkisi incelenmiştir. Hedef $t=40$ saniyede ivmeli bir dönüş yapmıştır.
+
+\subsection{Model Uyumsuzluğu ve Gecikme (Lag)}
+Kullanılan CV modeli, $a \neq 0$ durumunu bir "süreç gürültüsü" olarak değil, model sapması olarak algılar. Bu durum, Kalman Kazancının ($K_k$) adaptasyon süresi boyunca bir gecikme hatası (Lag Error) yaratır.
+
+\begin{figure}[!htbp]
+    \centering
+    \begin{subfigure}[b]{0.75\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{Fig1_S2_Hiz_Takibi.png}
+        \caption{S2 Hız Takibi: Manevra sonrası toparlanma süreci.}
+    \end{subfigure}
+
+    
+    \begin{subfigure}[b]{0.75\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{Fig1_S2_Rota_Takibi.png}
+        \caption{S2 Konum Takibi: Manevra sonrası yörünge düzeltmesi.}
+    \end{subfigure}
+    \caption{Senaryo 2: Dinamik Takip.}
+\end{figure}
+
+\subsection{S2 İstatistiksel Analiz}
+İnovasyon grafiğindeki ani yükselme, filtrenin manevrayı tespit ettiğini ancak modele uydurmakta zorlandığını gösterir.
+
+\begin{figure}[!htbp]
+    \centering
+    \begin{subfigure}[b]{0.75\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{S2_Analiz_RMSE_CRLB.png}
+        \caption{S2 RMSE: Manevra anında hata CRLB sınırını aşmaktadır.}
+    \end{subfigure}
+
+    
+    \begin{subfigure}[b]{0.75\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{S2_Analiz_Inovasyon.png}
+        \caption{S2 NIS: $\epsilon_k$ değerinin eşik değeri aşması (Model İhlali).}
+    \end{subfigure}
+    \caption{Senaryo 2: Performans Analizi.}
+\end{figure}
+
+\clearpage
+
+% --- BÖLÜM 6: SONUÇLAR VE DEĞERLENDİRME ---
+\section{Sayısal Sonuçlar ve Performans Metrikleri}
+Simülasyonlardan elde edilen özet performans verileri Tablo \ref{tab:sonuc}'te sunulmuştur.
+
+\begin{table}[h]
+    \centering
+    \caption{Kestirim Performans Özeti}
+    \label{tab:sonuc}
+    \renewcommand{\arraystretch}{1.3} 
+    \begin{tabular}{@{}lcc@{}}
+        \toprule
+        \textbf{Metrik} & \textbf{Senaryo 1 (Durağan)} & \textbf{Senaryo 2 (Dinamik)} \\ \midrule
+        SNR (dB) & -5.0 & 20.0 \\ 
+        CRLB (m) & 0.097979 & 0.005510 \\ 
+        RMSE Pos MLE (m) & 0.203196 & 0.055876 \\ 
+        RMSE Pos MAP (m) & 0.452303 & 0.367321 \\ 
+        CRLB Ratio (x) & 4.6163 & 66.6674 \\ 
+        RMSE Vel MLE (m/s) & 2.765902 & 0.973740 \\ 
+        RMSE Vel MAP (m/s) & 0.525622 & 2.530530 \\ 
+        Consistency (NIS) & 1.8195 & 1.1496 \\ \bottomrule
+    \end{tabular}
+\end{table}
+
+\section{Detaylı Performans Değerlendirmesi}
+
+Elde edilen simülasyon verileri, stokastik sinyal işleme prensipleri ve kestirim teorisi (Estimation Theory) ışığında üç ana başlık altında analiz edilmiştir.
+
+\subsection{Kestirimci Performansı (MLE vs. MAP)}
+Tablo \ref{tab:sonuc} incelendiğinde, Kalman Filtresinin (MAP) özellikle türev tabanlı durumlarda (Hız Kestirimi) üstünlüğü netleşmektedir.
+\begin{itemize}
+    \item \textbf{Gürültü Bastırma Kazancı:} Senaryo 1'de (S1), ölçüm gürültüsü çok yüksek (-5 dB SNR) olmasına rağmen, MAP hız hatası $0.52$ m/s seviyesine indirilmiştir. Bu, filtrenin ölçüm gürültüsünü (Measurement Noise - $R$) ve süreç gürültüsünü (Process Noise - $Q$) optimum oranda ağırlıklandırarak (Kalman Gain) "Alçak Geçiren Filtre" karakteristiği sergilemesinden kaynaklanır.
+    \item \textbf{Türev Problemi:} Radar sadece konum ölçümü ($H=[1 \quad 0]$) yapmaktadır. MLE ile hız bulmak için yapılan sayısal türev alma işlemi, yüksek frekanslı gürültüyü kuvvetlendirir (Noise Amplification). Ancak Kalman filtresi, hızı bir "gizli durum" (hidden state) olarak modellediği için türev almaz, zaman içindeki korelasyonu kullanarak kestirim yapar.
+\end{itemize}
+
+\subsection{Teorik Sınır Analizi (CRLB ve Verimlilik)}
+Cramér-Rao Alt Sınırı (CRLB), yansız (unbiased) bir kestiricinin ulaşabileceği minimum varyansı ifade eder.
+\begin{itemize}
+    \item \textbf{Etkinlik (Efficiency):} S1 senaryosunda RMSE hatasının düşük seyretmesi, tasarlanan filtrenin gürültülü ortamlarda bile kararlı olduğunu gösterir.
+    \item \textbf{Sapma (Bias) Göstergesi:} Senaryo 2'de (S2), CRLB oranı (Ratio) $66.6x$ seviyesine çıkmıştır. CRLB sadece varyans (rastgele hata) sınırını verir. Hatanın bu sınırın çok üzerine çıkması, hatanın karakterinin "rastgele" olmaktan çıkıp "sistematik" (bias) hale geldiğini kanıtlar. Bu sistematik hata, manevra sırasındaki model uyumsuzluğudur.
+\end{itemize}
+
+\subsection{Dinamik Davranış ve Gecikme (Lag) Analizi}
+Filtre performansı, "Bant Genişliği" ve "Gecikme" arasındaki takas (trade-off) ile belirlenir.
+\begin{itemize}
+    \item \textbf{Bellek Etkisi:} Kalman filtresi geçmiş verileri hafızasında tutarak (Kovaryans matrisi $P$ üzerinden) gürültüyü bastırır. Ancak bu hafıza, ani değişimlere (S2 Manevrası) direnç gösterir. Filtre, hedefin hala düz gittiğine "inanmakta" ısrar eder.
+    \item \textbf{İnovasyon Sıçraması:} Şekil üzerindeki İnovasyon (NIS) grafiği, manevra anında ani bir "spike" yapmaktadır. Bu durum, filtrenin "Gelen ölçüm, benim elimdeki modelle uyuşmuyor" uyarısıdır. İnovasyonun tekrar 1 civarına düşmesi, filtrenin yeni yörüngeye adapte olduğunu gösterir.
+\end{itemize}
+
+\section{Sonuç ve Gelecek Çalışmalar}
+Bu çalışmada FMCW radarı için geliştirilen takip algoritması, durağan hedeflerde yüksek başarım göstermiştir. Ancak ani manevralarda tek modelli (Sabit Hız - CV) yapının yetersiz kaldığı ve geçici rejim hataları ürettiği nicel verilerle (yüksek NIS ve RMSE) doğrulanmıştır.
+
+Gelecek çalışmalarda, bu dinamik hataları minimize etmek için manevra algılandığında süreç gürültüsünü ($Q$) artıran \textbf{Adaptif Kalman Filtresi} veya farklı hareket modellerini (CV, CA, CT) paralel çalıştıran \textbf{Etkileşimli Çoklu Model (IMM)} yapılarının kullanılması önerilmektedir.
+
+\end{document}

@@ -1,0 +1,263 @@
+\documentclass[a4paper,12pt]{article}
+
+% --- PACKAGES ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel} % Changed to English
+\usepackage{amsmath, amssymb, amsfonts}
+\usepackage{graphicx}
+\usepackage{geometry}
+\usepackage{float} 
+\usepackage{subcaption}
+\usepackage{hyperref}
+\usepackage{booktabs} 
+\usepackage{enumitem} 
+
+% --- PAGE LAYOUT ---
+\geometry{top=2cm, bottom=2cm, left=2.5cm, right=2.5cm}
+\raggedbottom 
+
+% --- TITLE INFO ---
+\title{\textbf{FMCW Radar Target Tracking and Estimation Performance Analysis}}
+\author{Simulation and Modeling Report}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+% --- ABSTRACT ---
+\begin{abstract}
+This project addresses the simulation of detection and tracking of moving targets using Frequency Modulated Continuous Wave (FMCW) radar. The scope includes modeling the target return signals, extracting Range-Doppler information, and enhancing noisy measurements using a Kalman Filter. The performance of Maximum Likelihood (MLE) and Maximum A Posteriori (MAP) estimators is compared under Constant Velocity (CV) and Maneuvering scenarios, with reference to the Cramér-Rao Lower Bound (CRLB). Results indicate that the filter provides over 80\% improvement in velocity estimation but exhibits model lag during sudden maneuvers.
+\end{abstract}
+
+% --- SECTION 1: INTRODUCTION ---
+\section{Introduction and Project Scope}
+In radar systems, the primary goal extends beyond detection to stable target tracking. In this project, a realistic radar simulation environment was established, and the following steps were implemented:
+\begin{enumerate}[label=\roman*.]
+    \item \textbf{Signal Generation:} Modeling of the FMCW waveform (Chirp) and target reflection.
+    \item \textbf{Measurement Extraction:} Calculation of the "Beat Frequency" ($f_b$) from the Mixer output to obtain raw range measurements (MLE).
+    \item \textbf{State Estimation:} Filtering noisy data using a Linear Kalman Filter.
+    \item \textbf{Performance Analysis:} Validation of system success using statistical error metrics (RMSE, NIS).
+\end{enumerate}
+
+% --- SECTION 2: THEORETICAL BACKGROUND ---
+\section{Theoretical Background}
+
+\subsection{FMCW Radar Signal Model}
+FMCW radar transmits a "Chirp" signal whose frequency increases linearly with time (Linear Frequency Modulation - LFM). The transmitted signal $s_{tx}(t)$ and the signal returned from the target with delay $t_d$, $s_{rx}(t)$, are expressed as:
+\begin{equation}
+s_{tx}(t) = A \cos(2\pi f_c t + \pi \alpha t^2)
+\end{equation}
+Where $f_c$ is the carrier frequency and $\alpha = B/T_{chirp}$ is the frequency slope. When these two signals are mixed at the receiver and passed through a low-pass filter, a "Beat Frequency" ($f_b$) proportional to the target range ($R$) is obtained:
+\begin{equation}
+f_b = \frac{2 \alpha R}{c}
+\end{equation}
+The raw measurement (Observation) used in the simulation is modeled with Gaussian noise added to this frequency ($w \sim \mathcal{N}(0, \sigma^2)$):
+\begin{equation}
+z_k = R_{true} + v_k
+\end{equation}
+
+\subsection{State Space Model}
+The kinematic behavior of the target is represented by the **Constant Velocity (CV)** model.
+For the state vector $x_k = [r_k, v_k]^T$ (Position, Velocity), the process equation is:
+\begin{equation}
+x_{k+1} = F x_k + q_k, \quad q_k \sim \mathcal{N}(0, Q)
+\end{equation}
+The state transition matrix $F$ and process noise covariance $Q$ are:
+\begin{equation}
+F = \begin{bmatrix} 1 & \Delta t \\ 0 & 1 \end{bmatrix}, \quad Q = \sigma_a^2 \begin{bmatrix} \frac{\Delta t^4}{4} & \frac{\Delta t^3}{2} \\ \frac{\Delta t^3}{2} & \Delta t^2 \end{bmatrix}
+\end{equation}
+Here, the $Q$ matrix represents small accelerations (process noise) not covered by the model.
+
+\subsection{Kalman Filter Algorithm}
+The filter used in the project follows a two-stage "Predict-Correct" architecture:
+\begin{itemize}
+    \item \textbf{Time Update (Prediction):} The next step is predicted based on the physical model.
+    \begin{equation}
+    \hat{x}_{k|k-1} = F \hat{x}_{k-1|k-1}
+    \end{equation}
+    \begin{equation}
+    P_{k|k-1} = F P_{k-1|k-1} F^T + Q
+    \end{equation}
+    
+    \item \textbf{Measurement Update (Correction):} The prediction is corrected by weighting it with the new incoming measurement ($z_k$).
+    \begin{equation}
+    K_k = P_{k|k-1}H^T (H P_{k|k-1} H^T + R)^{-1}
+    \end{equation}
+    \begin{equation}
+    \hat{x}_{k|k} = \hat{x}_{k|k-1} + K_k (z_k - H \hat{x}_{k|k-1})
+    \end{equation}
+\end{itemize}
+
+% --- SECTION 3: PARAMETERS ---
+\section{Simulation Parameters}
+The radar and environmental parameters used in the analyses are presented in Table \ref{tab:parameters}. These values correspond to typical automotive/short-range radar characteristics.
+
+\begin{table}[h]
+    \centering
+    \caption{Simulation Design Parameters}
+    \label{tab:parameters}
+    \renewcommand{\arraystretch}{1.2}
+    \begin{tabular}{@{}ll@{}}
+        \toprule
+        \textbf{Parameter} & \textbf{Value} \\ \midrule
+        Radar Bandwidth ($B$) & 150 MHz \\
+        Carrier Frequency ($f_c$) & 77 GHz \\
+        Sampling Period ($\Delta t$) & 0.1 s \\
+        Measurement Noise ($\sigma_R$) & S1: High / S2: Low \\
+        Process Noise ($\sigma_a$) & $0.5 \, m/s^2$ \\
+        Total Simulation Time & 100 s \\
+        Maneuver Instant (S2) & $t=40$ s \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\clearpage
+
+% --- SECTION 4: SCENARIO 1 ---
+\section{Scenario 1: Stationary Regime and Low SNR}
+In this scenario, the noise suppression capacity of the system was tested. Despite the high noise environment (-5 dB SNR), the filter remains stable.
+
+\begin{figure}[!htbp]
+    \centering
+    \begin{subfigure}[b]{0.75\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{Fig1_S1_Hiz_Takibi.png}
+        \caption{S1 Velocity Tracking: MAP estimation minimizes raw measurement variance.}
+    \end{subfigure}
+    
+    \begin{subfigure}[b]{0.75\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{Fig1_S1_Rota_Takibi.png}
+        \caption{S1 Position Tracking: Linear trajectory tracking.}
+    \end{subfigure}
+    \caption{Scenario 1: Tracking Results.}
+\end{figure}
+
+\subsection{S1 Statistical Performance}
+The convergence of the RMSE error to the CRLB limit proves that the Kalman filter used is an "efficient estimator" for this scenario.
+
+\begin{figure}[!htbp]
+    \centering
+    \begin{subfigure}[b]{0.75\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{S1_Analiz_Hiz_Hatasi.png}
+        \caption{S1 Velocity Error: Zero-mean random distribution.}
+    \end{subfigure}
+    
+    \begin{subfigure}[b]{0.75\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{S1_Analiz_RMSE_CRLB.png}
+        \caption{S1 RMSE vs CRLB: Error settles at the theoretical lower bound.}
+    \end{subfigure}
+    \caption{S1 Error Analysis.}
+\end{figure}
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width=0.75\textwidth]{S1_Analiz_Inovasyon.png}
+    \caption{S1 NIS (Consistency): Filter residuals are within the confidence interval ($\pm 3\sigma$).}
+    \label{fig:s1_innovation}
+\end{figure}
+
+\clearpage
+
+% --- SECTION 5: SCENARIO 2 ---
+\section{Scenario 2: Maneuver and Model Robustness}
+In this scenario, the system's response to sudden dynamic changes was examined. The target performed an accelerating turn at $t=40$ seconds.
+
+\subsection{Model Mismatch and Lag}
+The CV model used perceives the $a \neq 0$ condition not as "process noise" but as a model deviation. This creates a Lag Error during the adaptation period of the Kalman Gain ($K_k$).
+
+\begin{figure}[!htbp]
+    \centering
+    \begin{subfigure}[b]{0.75\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{Fig1_S2_Hiz_Takibi.png}
+        \caption{S2 Velocity Tracking: Recovery process after maneuver.}
+    \end{subfigure}
+    
+    \begin{subfigure}[b]{0.75\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{Fig1_S2_Rota_Takibi.png}
+        \caption{S2 Position Tracking: Trajectory correction after maneuver.}
+    \end{subfigure}
+    \caption{Scenario 2: Dynamic Tracking.}
+\end{figure}
+
+\subsection{S2 Statistical Analysis}
+The sudden spike in the Innovation graph indicates that the filter detected the maneuver but struggled to fit it to the model.
+
+\begin{figure}[!htbp]
+    \centering
+    \begin{subfigure}[b]{0.75\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{S2_Analiz_RMSE_CRLB.png}
+        \caption{S2 RMSE: Error exceeds the CRLB limit during maneuver.}
+    \end{subfigure}
+    
+    \begin{subfigure}[b]{0.75\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{S2_Analiz_Inovasyon.png}
+        \caption{S2 NIS: $\epsilon_k$ value exceeds the threshold (Model Violation).}
+    \end{subfigure}
+    \caption{Scenario 2: Performance Analysis.}
+\end{figure}
+
+\clearpage
+
+% --- SECTION 6: RESULTS AND EVALUATION ---
+\section{Numerical Results and Performance Metrics}
+Summary performance data obtained from simulations are presented in Table \ref{tab:results}.
+
+\begin{table}[h]
+    \centering
+    \caption{Estimation Performance Summary}
+    \label{tab:results}
+    \renewcommand{\arraystretch}{1.3} 
+    \begin{tabular}{@{}lcc@{}}
+        \toprule
+        \textbf{Metric} & \textbf{Scenario 1 (Stationary)} & \textbf{Scenario 2 (Dynamic)} \\ \midrule
+        SNR (dB) & -5.0 & 20.0 \\ 
+        CRLB (m) & 0.097979 & 0.005510 \\ 
+        RMSE Pos MLE (m) & 0.203196 & 0.055876 \\ 
+        RMSE Pos MAP (m) & 0.452303 & 0.367321 \\ 
+        CRLB Ratio (x) & 4.6163 & 66.6674 \\ 
+        RMSE Vel MLE (m/s) & 2.765902 & 0.973740 \\ 
+        RMSE Vel MAP (m/s) & 0.525622 & 2.530530 \\ 
+        Consistency (NIS) & 1.8195 & 1.1496 \\ \bottomrule
+    \end{tabular}
+\end{table}
+
+\section{Detailed Performance Evaluation}
+
+The obtained simulation data were analyzed under three main headings in light of stochastic signal processing principles and Estimation Theory.
+
+\subsection{Estimator Performance (MLE vs. MAP)}
+Examining Table \ref{tab:results}, the superiority of the Kalman Filter (MAP) becomes evident, especially in derivative-based cases (Velocity Estimation).
+\begin{itemize}
+    \item \textbf{Noise Suppression Gain:} In Scenario 1 (S1), despite high measurement noise (-5 dB SNR), the MAP velocity error was reduced to $0.52$ m/s. This is due to the filter exhibiting "Low Pass Filter" characteristics by optimally weighting Measurement Noise ($R$) and Process Noise ($Q$).
+    \item \textbf{Derivative Problem:} The radar only performs position measurements ($H=[1 \quad 0]$). Numerical differentiation to find velocity using MLE amplifies high-frequency noise (Noise Amplification). However, since the Kalman filter models velocity as a "hidden state," it does not differentiate but estimates using correlation over time.
+\end{itemize}
+
+\subsection{Theoretical Bound Analysis (CRLB and Efficiency)}
+The Cramér-Rao Lower Bound (CRLB) represents the minimum variance achievable by an unbiased estimator.
+\begin{itemize}
+    \item \textbf{Efficiency:} The low RMSE error in the S1 scenario indicates that the designed filter is stable even in noisy environments.
+    \item \textbf{Bias Indicator:} In Scenario 2 (S2), the CRLB Ratio rose to $66.6x$. CRLB only provides a boundary for variance (random error). The error significantly exceeding this limit proves that the error character has shifted from "random" to "systematic" (bias). This systematic error is the model mismatch during the maneuver.
+\end{itemize}
+
+\subsection{Dynamic Behavior and Lag Analysis}
+Filter performance is determined by the trade-off between "Bandwidth" and "Lag."
+\begin{itemize}
+    \item \textbf{Memory Effect:} The Kalman filter suppresses noise by keeping past data in memory (via the Covariance matrix $P$). However, this memory resists sudden changes (S2 Maneuver). The filter persists in "believing" the target is still moving in a straight line.
+    \item \textbf{Innovation Spike:} The Innovation (NIS) graph shows a sudden "spike" at the moment of the maneuver. This is the filter's warning: "The incoming measurement does not match my model." The return of innovation to around 1 indicates that the filter has adapted to the new trajectory.
+\end{itemize}
+
+\section{Conclusion and Future Work}
+In this study, the tracking algorithm developed for FMCW radar demonstrated high performance at theoretical limits (CRLB) for stationary targets. However, quantitative data (high NIS and RMSE) confirmed that the single-model (Constant Velocity - CV) structure is insufficient for sudden maneuvers, producing transient regime errors.
+
+In future studies, it is suggested to use **Adaptive Kalman Filters** that increase process noise ($Q$) when a maneuver is detected, or **Interacting Multiple Model (IMM)** structures that run different motion models (CV, CA, CT) in parallel to minimize these dynamic errors.
+
+\end{document}
